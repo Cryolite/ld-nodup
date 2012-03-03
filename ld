@@ -1,16 +1,56 @@
-#! /usr/bin/ruby
+#! /usr/bin/ruby1.9.1
 
-require 'tempfile'
+# Requires Ruby 1.9.x.
+# This script can't run on Ruby 1.8.x (because of http://bit.ly/xJi5ro)
+# nor Windows (because Open3 can't work).
 
-# Check '--nodup' option and extract the output filename.
+# If this script is invoked without `--nodup' command line option, it just
+# invokes `ld' command. All the command line options are passed to `ld' as
+# they are. Finally, this script exits and returns ld's status code.
+#
+# If this script is invoked with `--nodup' command line option, it invokes
+# `gold' linker (http://bit.ly/ylAh5N) with `--debug files' command line
+# option. All the command line options other than `--nodup' are passed to
+# `gold' as they are. If `gold' fails, then this script also fails and
+# immediately exits with the error status code. If `gold' succeeds in linking
+# and produces the result of linking, the subsequent behavior of this script
+# is as follows.
+#
+# With `--debug files' option, `gold' outputs the file paths it attempts to
+# open to `stderr'. This script analyzes `stderr' and enumerates all the file
+# paths. These files are ones that are directly passed to `gold' as the
+# command line options or searched by `-l' options.
+#
+# Next, this script musters all global symbols defined in the enumerated
+# files by using `nm -g' command on each file.
+#
+# If any duplicate symbol is found, this script prints the duplicate symbols
+# to `stderr', deletes the result of linking produced by `gold' and exits
+# with an error status code.
+#
+# If no duplicate symbol is found, this script just exits with the success
+# status code.
+
+require 'open3'
+
+# The full path to GNU ld.
+LD_FULL_PATH = '/usr/bin/ld'
+
+# The full path to gold linker.
+GOLD_FULL_PATH = '/usr/bin/gold'
+
+# The line pattern from `ld --debug files'. `$1' should match the file path.
+GOLD_FILE_PATH_PATTERN = /^#{GOLD_FULL_PATH}: Attempt to open (.*?) succeeded$/
+
+
+
+
+
+# Checks '--nodup' option and extracts the output filename.
 is_nodup = false
 expect_filename = false
-output_filename = nil
+output_filename = 'a.out'
 ARGV.each {|v|
-  if v == '--nodup' then
-    is_nodup = true
-    next
-  end
   if v == '-o' then
     expect_filename = true
     next
@@ -24,14 +64,18 @@ ARGV.each {|v|
     output_filename = $1
     next
   end
+  if v == '--nodup' then
+    is_nodup = true
+    next
+  end
 }
 
-# Prepare the link command and options.
+# Prepares the link command and options.
 link_command = nil
 if is_nodup then
-  link_command = '/usr/bin/gold --trace --detect-odr-violations'
+  link_command = "#{GOLD_FULL_PATH} --debug files"
 else
-  link_command = '/usr/bin/ld'
+  link_command = LD_FULL_PATH
 end
 ARGV.each {|v|
   if v == '--nodup' then
@@ -40,73 +84,21 @@ ARGV.each {|v|
   link_command << ' "' << v << '"'
 }
 
-# Execute the link command.
-# Outputs by `--trace' option will be written to the stderr.
-ld_err = nil
-ld_out = nil
-ld_status = nil
-Tempfile.open('tmp') {|tmp_file|
-  ld_out = `#{link_command} 2>#{tmp_file.path}`
-  ld_status = $?
-  ld_err = tmp_file.read
-}
-if !is_nodup || ld_status != 0 then
-  # Exit immediately if '--nodup' is not specified or the link failed.
-  print ld_out
-  STDERR.print ld_err
-  exit ld_status
-end
-# Print normal outputs from the linker.
-print ld_out
-
-def scanLinkerOutputLine line
-  line.chomp!
-
-  if /^-l(.*) \((.*)\)$/ =~ line then
-    # The path to a library file following the corresponding `-l' option,
-    # which `ld' could output.
-    return [$1, $2]
-  end
-
-  if /^\((.*)\).*$/ =~ line then
-    # The path to an archive file followed by a contained object file name,
-    # which `ld' could output.
-    return [nil, $1]
-  end
-
-  if /^(.*) \(.*\)$/ =~ line then
-    # The path to a library file (followed by a weird path???),
-    # which `ld' could output.
-    return [nil, $1]
-  end
-
-  if /^(.*)\(.*\)$/ =~ line then
-    # The path to an archive file followed by a contained object file name,
-    # which `gold' could output.
-    return [nil, $1]
-  end
-
-  if /ld: mode/ =~ line then
-    # `ld --trace' outputs a non-informative string in the first line
-    # such as `/usr/bin/ld: mode elf_x86_64'. Skip.
-    return [nil, nil]
-  end
-
-  if File.exist?(line) then
-    # The line just contains the path to an object or library file,
-    # which `ld' or `gold' could output.
-    return [nil, line]
-  end
-
-  # Another kind of line in the stderr from the linker.
-  STDERR.puts line
-  return [nil, nil]
+# Executes the link command.
+# Outputs by `--debug files' option will be written to `stderr'.
+linker_out, linker_err, linker_status = Open3.capture3(link_command)
+# Print the standard output from the linker.
+print linker_out
+if !is_nodup || !linker_status.success? then
+  # Exits immediately if '--nodup' was not specified or the linking failed.
+  STDERR.print linker_err
+  exit linker_status.to_i
 end
 
 # List containing the paths of already scanned files.
-libs = Hash.new
+files = Hash.new
 
-# List containing the already defined symbols.
+# List containing the symbols whose definition is already found.
 symbols = Hash.new
 
 # List containing the symbols of no interest.
@@ -115,55 +107,49 @@ special_symbols = {'_init' => nil, '_fini' => nil}
 # Status code to be returned from this script.
 status = 0
 
-ld_err.each {|ld_line|
-  ld_line.chomp!
+linker_err.each_line {|linker_line|
+  linker_line.chomp!
 
-  search_opt, lib_path = scanLinkerOutputLine(ld_line)
-  if !lib_path then
-    # Skip the line of no interest.
+  if GOLD_FILE_PATH_PATTERN !~ linker_line then
+    # Skips the line of no interest.
     next
   end
-  # Normalize the path string.
-  lib_path = File.expand_path(lib_path)
+  file_path = $1
+  # Normalizes the path string.
+  #file_path = File.expand_path(file_path)
 
-  # Check the file existence.
-  if !File.exist?(lib_path) then
-    STDERR.puts "ERROR: cannot find the file `#{lib_path}'"
-    if search_opt then
-      STDERR.puts "       searched by `-l#{search_opt}'"
-    end
+  # Checks the file existence.
+  if !File.exist?(file_path) then
+    STDERR.puts "ERROR: cannot find the file `#{file_path}'"
     exit 1
   end
 
-  # `ld --trace' and `gold --trace' could
-  # output the path to a library file multiple times, e.g.,
-  # each of which is for an objct file contained in an archive file.
-  # So, skip the second and subsequent outputs of the same path.
-  if libs.has_key?(lib_path) then
+  # `gold --debug files' could output the path to a library file multiple
+  # times, e.g., each of which is for an objct file contained in an archive
+  # file. So, skips the second and subsequent outputs of the same path.
+  if files.has_key?(file_path) then
     next
   end
-  libs.store(lib_path, nil)
+  files.store(file_path, true)
 
-  # Execute the `nm'.
-  nm_out = `nm "#{lib_path}" 2>&1`
-  nm_status = $?
-  if nm_status != 0 then
-    STDERR.puts "ERROR: `nm' on `#{lib_path}' failed"
-    if search_opt then
-      STDERR.puts "       searched by `-l#{search_opt}'"
-    end
-    exit nm_status
-  end
-
-  if /no symbols/ =~ nm_out then
-    # Skip the file that does not contain any symbol.
+  # Executes `nm -g' command.
+  nm_out, nm_err, nm_status = Open3.capture3("nm -g \"#{file_path}\"")
+  if !nm_status.success? then
+    #print nm_out
+    #STDERR.print nm_err
     next
   end
 
-  nm_out.each {|nm_line|
+  #if /no symbols/ =~ nm_out then
+  #  print nm_out
+  #  # Skips the file that does not contain any symbol.
+  #  next
+  #end
+
+  nm_out.each_line {|nm_line|
     nm_line.chomp!
     if /:$/ =~ nm_line then
-      # Skip the first line, which is of no interest.
+      # Skips the first line, which is of no interest.
       next
     end
 
@@ -171,8 +157,12 @@ ld_err.each {|ld_line|
       kind = $1
       symbol = $2
 
+      if symbol =~ /^__.*/ then
+        next
+      end
+
       if special_symbols.has_key?(symbol) then
-        # Skip a special symbol, in which we don't have any interest.
+        # Skips a special symbol, in which we don't have any interest.
         next
       end
 
@@ -180,27 +170,23 @@ ld_err.each {|ld_line|
         # A global symbol in the text (code) section.
         if symbols.has_key?(symbol) then
           # Multiple definitions found.
-          first_path, first_opt = symbols.fetch(symbol)
-          STDERR.puts "ERROR: #{lib_path}: #{symbol}: multiple definitions in the text section"
-          if search_opt then
-            STDERR.puts "         searched by `-l#{search_opt}'"
-          end
+          first_path = symbols.fetch(symbol)
+          STDERR.puts "ERROR: #{file_path}: #{symbol}: multiple definitions in the text section"
           STDERR.puts "ERROR: #{first_path}: first defined here"
-          if first_opt then
-            STDERR.puts "         searched by `-l#{first_opt}'"
-          end
-          # Set the error status code and go to the next symbol.
+          # Sets the error status code and goes to the next symbol.
           status = 1
           next
+        else
+          # First definition.
+          symbols.store(symbol, file_path)
         end
-        # First definition.
-        symbols.store(symbol, [lib_path, search_opt])
       end
     end
   }
 }
 
 if status != 0 then
+  # Deletes the result of linking when any duplicate symbol was found.
   File.delete(output_filename)
 end
 exit status
