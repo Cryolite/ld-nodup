@@ -1,0 +1,120 @@
+path-constant LD_NODUP_ROOT : . ;
+
+
+######################################################################
+#                                                                    #
+# New Features                                                       #
+#                                                                    #
+######################################################################
+
+import feature ;
+
+feature.feature check
+  : off on
+  : propagated composite link-incompatible
+  ;
+feature.compose <check>on
+  : <define>LD_NODUP_ENABLE_CHECK
+  ;
+
+feature.feature memcheck
+  : off on
+  : propagated composite link-incompatible
+  ;
+feature.compose <memcheck>on
+  : <define>LD_NODUP_ENABLE_MEMCHECK
+    <testing.launcher>"valgrind --quiet --error-exitcode=1 --leak-check=full"
+  ;
+
+feature.feature ssp
+  : off on all
+  : propagated composite link-incompatible
+  ;
+feature.compose <ssp>on
+  : <define>LD_NODUP_ENABLE_SSP=1
+    <cflags>-fstack-protector
+    <linkflags>-fstack-protector
+  ;
+feature.compose <ssp>all
+  : <define>LD_NODUP_ENABLE_SSP=2
+    <cflags>-fstack-protector-all
+    <linkflags>-fstack-protector-all
+  ;
+
+feature.feature mudflap
+  : off on
+  : propagated composite link-incompatible
+  ;
+feature.compose <mudflap>on
+  : <define>LD_NODUP_ENABLE_MUDFLAP
+    #<threading>single:<cflags>-fmudflap
+    #<threading>multi:<cflags>-fmudflapth
+    #<threading>single:<linkflags>-fmudflap
+    #<threading>multi:<linkflags>-fmudflapth
+    #<link>shared,<threading>single:<find-shared-library>mudflap
+    #<link>shared,<threading>multi:<find-shared-library>mudflapth
+    #<link>static,<threading>single:<find-static-library>mudflap
+    #<link>static,<threading>multi:<find-static-library>mudflapth
+    <testing.launcher>"env MUDFLAP_OPTIONS=-viol-segv"
+  ;
+
+feature.feature lto
+  : off on
+  : propagated composite link-incompatible
+  ;
+feature.compose <lto>on
+  : <cflags>-flto
+    <cflags>-fuse-linker-plugin
+    #<link>shared:<linkflags>-fPIC
+    <linkflags>-O3
+    <linkflags>-finline-functions
+    <linkflags>-Wno-inline
+    #<rtti>off:<linkflags>-fno-rtti
+    <linkflags>-flto
+    <linkflags>-fuse-linker-plugin
+  ;
+
+feature.feature link-nodup
+  : off on
+  : propagated composite
+  ;
+feature.compose <link-nodup>on
+  : <linkflags>-Wl,--nodup
+  ;
+
+
+######################################################################
+#                                                                    #
+# Global Configuration                                               #
+#                                                                    #
+######################################################################
+
+project ld-nodup
+  : requirements
+    <toolset>gcc:<cxxflags>-std=c++0x
+    <include>.
+    <threading>single:<define>LD_NODUP_SINGLETHREADING
+    <threading>multi:<define>LD_NODUP_MULTITHREADING
+    <c++-template-depth>1024
+    <warnings>all
+    <warnings-as-errors>on
+    <link>shared:<runtime-link>shared
+    <hardcode-dll-paths>false
+
+    <mudflap>on,<threading>single:<cflags>-fmudflap
+    <mudflap>on,<threading>single:<linkflags>-fmudflap
+    <mudflap>on,<threading>single,<link>static:<find-static-library>mudflap
+    <mudflap>on,<threading>single,<link>shared:<find-shared-library>mudflap
+    <mudflap>on,<threading>multi:<cflags>-fmudflapth
+    <mudflap>on,<threading>multi:<linkflags>-fmudflapth
+    <mudflap>on,<threading>multi,<link>static:<find-static-library>mudflapth
+    <mudflap>on,<threading>multi,<link>shared:<find-shared-library>mudflapth
+
+    <lto>on,<link>shared:<linkflags>-fPIC
+    <lto>on,<rtti>off:<linkflags>-fno-rtti
+  : default-build
+    <link>shared
+    <runtime-link>shared
+    <threading>multi
+  : build-dir bin
+  ;

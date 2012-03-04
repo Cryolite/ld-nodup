@@ -1,0 +1,118 @@
+project ld-nodup/test ;
+
+local compile-deps
+  =
+  ;
+
+local link-deps
+  =
+  ;
+
+import testing ;
+
+obj foo.obj : foo.cpp ; explicit foo.obj ;
+lib foo.lib : foo.obj ; explicit foo.lib ;
+
+obj foo2.obj : foo2.cpp ; explicit foo2.obj ;
+lib foo2.lib : foo2.obj ; explicit foo2.lib ;
+
+obj main.obj : main.cpp ; explicit main.obj ;
+
+link-fail
+    foo.obj foo2.obj main.obj
+  :
+  : obj_t_obj_t.link-fail
+  ;
+explicit obj_t_obj_t.link-fail ;
+alias obj_t_obj_t_link-fail
+  : obj_t_obj_t.link-fail/<link-nodup>off
+    obj_t_obj_t.link-fail/<link-nodup>on
+  ;
+
+link
+    foo.obj foo2.lib/<link>static main.obj
+  : <link-nodup>off
+  : obj_t_static_t.link
+  ;
+link-fail
+    foo.obj foo2.lib/<link>static main.obj
+  : <link-nodup>on
+  : obj_t_static_t.link-fail
+  ;
+
+link
+    foo.obj foo2.lib/<link>shared main.obj
+  : <link-nodup>off
+  : obj_t_shared_t.link
+  ;
+link-fail
+    foo.obj foo2.lib/<link>shared main.obj
+  : <link-nodup>on
+  : obj_t_shared_t.link-fail
+  ;
+
+link
+    foo.lib/<link>static foo2.obj main.obj
+  : <link-nodup>off
+  : static_t_obj_t.link
+  ;
+link-fail
+    foo.lib/<link>static foo2.obj main.obj
+  : <link-nodup>on
+  : static_t_obj_t.link-fail
+  ;
+
+link
+    foo.lib/<link>static foo2.lib/<link>static main.obj
+  : <link-nodup>off
+  : static_t_static_t.link
+  ;
+link-fail
+    foo.lib/<link>static foo2.lib/<link>static main.obj
+  : <link-nodup>on
+  : static_t_static_t.link-fail
+  ;
+
+link
+    foo.lib/<link>static foo2.lib/<link>shared main.obj
+  : <link-nodup>off
+  : static_t_shared_t.link
+  ;
+link-fail
+    foo.lib/<link>static foo2.lib/<link>shared main.obj
+  : <link-nodup>on
+  : static_t_shared_t.link-fail
+  ;
+
+link
+    foo.lib/<link>shared foo2.obj main.obj
+  : <link-nodup>off
+  : shared_t_obj_t.link
+  ;
+link-fail
+    foo.lib/<link>shared foo2.obj main.obj
+  : <link-nodup>on
+  : shared_t_obj_t.link-fail
+  ;
+
+link
+    foo.lib/<link>shared foo2.lib/<link>static main.obj
+  : <link-nodup>off
+  : shared_t_static_t.link
+  ;
+link-fail
+    foo.lib/<link>shared foo2.lib/<link>static main.obj
+  : <link-nodup>on
+  : shared_t_static_t.link-fail
+  ;
+
+link
+    foo.lib/<link>shared foo2.lib/<link>shared main.obj
+  : <link-nodup>off
+  : shared_t_shared_t.link
+  ;
+link-fail
+    foo.lib/<link>shared foo2.lib/<link>shared main.obj
+  : <link-nodup>on
+  : shared_t_shared_t.link-fail
+  ;

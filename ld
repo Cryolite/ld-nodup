@@ -4,43 +4,79 @@
 # This script can't run on Ruby 1.8.x (because of http://bit.ly/xJi5ro)
 # nor Windows (because Open3 can't work).
 
+# This script is designed to be named `ld' or `real-ld' and invoked by GCC
+# front end instead of the original `ld'. Unless this script is invoked with
+# a certain command line option, this script acts as if it were the original
+# `ld'. Users are requested to adjust the command search path etc. in order
+# for this script to have priority over the original `ld'. For your
+# convenience, I summarize below the file names of `ld' GCC front end (more
+# specifically, `collect2', which is a subprogram called by GCC front end)
+# tries to find:
+#
+#   - If GCC being used was configured with `--with-ld=/path/to/ld' option,
+#     the specified path is used.
+#   - `real-ld' in the directories listed in the compiler's search
+#     directories (including one specified by `-B' option).
+#   - `real-ld' in the directories listed in `PATH' environment variable.
+#   - If `REAL_LD_FILE_NAME' configuration macro is specified, the specified
+#     path is used (I'm not so sure of this configuration macro).
+#   - `ld' in the compiler's search directories (again, including one
+#     specified by `-B' option), except that `collect2' will not execute
+#     itself recursively.
+#   - `ld' in `PATH' environment variable.
+#
+# If you want to name this script `ld', the absolute path to `ld' should be
+# hardcoded in this script in order to avoid self-recursive call. It is not
+# the case when this script is named `real-ld'.
+#
 # If this script is invoked without `--nodup' command line option, it just
-# invokes `ld' command. All the command line options are passed to `ld' as
-# they are. Finally, this script exits and returns ld's status code.
+# calls `ld'. As mentioned above, the command to call the original `ld' is
+# hardcoded below in the script. All the command line options given to this
+# script are passed to `ld' as they are. And this script exits and returns
+# ld's status code.
 #
-# If this script is invoked with `--nodup' command line option, it invokes
-# `gold' linker (http://bit.ly/ylAh5N) with `--debug files' command line
-# option. All the command line options other than `--nodup' are passed to
-# `gold' as they are. If `gold' fails, then this script also fails and
-# immediately exits with the error status code. If `gold' succeeds in linking
-# and produces the result of linking, the subsequent behavior of this script
-# is as follows.
+# If this script is invoked with `--nodup' command line option, it calls `ld'
+# with `-Map=/path/to/tempfile' command line option. All the command line
+# options other than `--nodup' are also passed to `ld' as they are. If `ld'
+# fails, then this script immediately exits and returns ld's status code. If
+# `ld' succeeds in linking and produces the result of linking, the subsequent
+# behavior of this script is as follows.
 #
-# With `--debug files' option, `gold' outputs the file paths it attempts to
-# open to `stderr'. This script analyzes `stderr' and enumerates all the file
-# paths. These files are ones that are directly passed to `gold' as the
-# command line options or searched by `-l' options.
+# With `-Map=/path/to/tempfile' option, `ld' outputs the link map to the
+# file. This script analyzes the file and extracts all file paths contained
+# in the link map. These file paths are ones that are directly passed to `ld'
+# as the command line arguments or searched by `-l' options.
 #
-# Next, this script musters all global symbols defined in the enumerated
-# files by using `nm -g' command on each file.
+# Next, this script gathers all global symbols defined in the text section
+# of the extracted file paths by using `nm -g' command on each file.
 #
-# If any duplicate symbol is found, this script prints the duplicate symbols
-# to `stderr', deletes the result of linking produced by `gold' and exits
-# with an error status code.
+# If any duplicate symbol is found, this script prints the duplicate symbol
+# to `stderr', deletes the result of linking produced by `ld' and exits with
+# an error status code.
 #
-# If no duplicate symbol is found, this script just exits with the success
+# If no duplicate symbol is found, this script exits and returns the success
 # status code.
+#
+# In addition to the detected duplicate symbols, the standard error output
+# from `ld' is printed to `stderr' as it is. The standard output from `ld' is
+# printed to `stdout' as it is, too.
+#
+# Many duplicate symbols of no interest are also found in the way previously
+# described. Current implementation skips these symbols by the following
+# ad-hoc rules.
+#   - Skips "_init"
+#   - Skips "_fini"
+#   - Skips symbols that match /__.*/
 
+require 'tempfile'
 require 'open3'
 
 # The full path to GNU ld.
 LD_FULL_PATH = '/usr/bin/ld'
 
-# The full path to gold linker.
-GOLD_FULL_PATH = '/usr/bin/gold'
-
-# The line pattern from `ld --debug files'. `$1' should match the file path.
-GOLD_FILE_PATH_PATTERN = /^#{GOLD_FULL_PATH}: Attempt to open (.*?) succeeded$/
+# The line pattern to extract file paths from the linker map. `$1' should
+# match the file path in the line.
+LINK_MAP_FILE_PATH_PATTERN = /^LOAD (.*)$/
 
 
 
@@ -70,10 +106,13 @@ ARGV.each {|v|
   end
 }
 
+# Creates a tempfile for the link map.
+linkmap_file = Tempfile.new('linkmap')
+
 # Prepares the link command and options.
 link_command = nil
 if is_nodup then
-  link_command = "#{GOLD_FULL_PATH} --debug files"
+  link_command = "#{LD_FULL_PATH} -Map=#{linkmap_file.path}"
 else
   link_command = LD_FULL_PATH
 end
@@ -85,14 +124,15 @@ ARGV.each {|v|
 }
 
 # Executes the link command.
-# Outputs by `--debug files' option will be written to `stderr'.
-linker_out, linker_err, linker_status = Open3.capture3(link_command)
-# Print the standard output from the linker.
+linker_out, linker_err, linker_status = Open3.capture3("#{link_command}")
 print linker_out
+STDERR.print linker_err
 if !is_nodup || !linker_status.success? then
   # Exits immediately if '--nodup' was not specified or the linking failed.
-  STDERR.print linker_err
-  exit linker_status.to_i
+  if linker_status.success? then
+    exit 0
+  end
+  exit 1 #linker_status.to_i
 end
 
 # List containing the paths of already scanned files.
@@ -107,10 +147,10 @@ special_symbols = {'_init' => nil, '_fini' => nil}
 # Status code to be returned from this script.
 status = 0
 
-linker_err.each_line {|linker_line|
-  linker_line.chomp!
+linkmap_file.each_line {|linkmap_line|
+  linkmap_line.chomp!
 
-  if GOLD_FILE_PATH_PATTERN !~ linker_line then
+  if LINK_MAP_FILE_PATH_PATTERN !~ linkmap_line then
     # Skips the line of no interest.
     next
   end
@@ -124,9 +164,10 @@ linker_err.each_line {|linker_line|
     exit 1
   end
 
-  # `gold --debug files' could output the path to a library file multiple
-  # times, e.g., each of which is for an objct file contained in an archive
-  # file. So, skips the second and subsequent outputs of the same path.
+  # The link map could output the path to a library file multiple times. For
+  # example, it happens when a file path is passed to the linker multiple
+  # times. So, we need to skip the second and subsequent outputs of the same
+  # path.
   if files.has_key?(file_path) then
     next
   end
@@ -135,13 +176,11 @@ linker_err.each_line {|linker_line|
   # Executes `nm -g' command.
   nm_out, nm_err, nm_status = Open3.capture3("nm -g \"#{file_path}\"")
   if !nm_status.success? then
-    #print nm_out
-    #STDERR.print nm_err
+    # Simply skips the file on which `nm' failed. Is there any TODO?
     next
   end
 
   #if /no symbols/ =~ nm_out then
-  #  print nm_out
   #  # Skips the file that does not contain any symbol.
   #  next
   #end
@@ -158,6 +197,7 @@ linker_err.each_line {|linker_line|
       symbol = $2
 
       if symbol =~ /^__.*/ then
+        # Skips a symbol corresponding to a reserved name.
         next
       end
 
@@ -171,7 +211,7 @@ linker_err.each_line {|linker_line|
         if symbols.has_key?(symbol) then
           # Multiple definitions found.
           first_path = symbols.fetch(symbol)
-          STDERR.puts "ERROR: #{file_path}: #{symbol}: multiple definitions in the text section"
+          STDERR.puts "ERROR: #{file_path}: multiple definition of `#{symbol}'"
           STDERR.puts "ERROR: #{first_path}: first defined here"
           # Sets the error status code and goes to the next symbol.
           status = 1
