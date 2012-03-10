@@ -7,66 +7,73 @@
 # This script is designed to be named `ld' or `real-ld' and invoked by GCC
 # front end instead of the original `ld'. Unless this script is invoked with
 # a certain command line option, this script acts as if it were the original
-# `ld'. Users are requested to adjust the command search path etc. in order
-# for this script to have priority over the original `ld'. For your
-# convenience, I summarize below the file names of `ld' GCC front end (more
-# specifically, `collect2', which is a subprogram called by GCC front end)
-# tries to find:
+# `ld'. Users are requested to adjust `PATH' environment variable etc. in
+# order for this script to have priority over the original `ld'.
+#
+# For your convenience, I summarize below the file names of `ld' GCC front
+# end (more specifically, `collect2', which is a subprogram called by GCC
+# front end) tries to find:
 #
 #   - If GCC being used was configured with `--with-ld=/path/to/ld' option,
 #     the specified path is used.
 #   - `real-ld' in the directories listed in the compiler's search
-#     directories (including one specified by `-B' option).
+#     directories (including ones specified by `-B' option etc.).
 #   - `real-ld' in the directories listed in `PATH' environment variable.
 #   - If `REAL_LD_FILE_NAME' configuration macro is specified, the specified
-#     path is used (I'm not so sure of this configuration macro).
-#   - `ld' in the compiler's search directories (again, including one
-#     specified by `-B' option), except that `collect2' will not execute
+#     path is used.
+#   - `ld' in the compiler's search directories (again, including ones
+#     specified by `-B' option etc.), except that `collect2' will not execute
 #     itself recursively.
 #   - `ld' in `PATH' environment variable.
 #
-# If you want to name this script `ld', the absolute path to `ld' should be
-# hardcoded in this script in order to avoid self-recursive call. It is not
-# the case when this script is named `real-ld'.
+#
+# If you want to name this script `ld', the absolute path to the original
+# `ld' should be hardcoded in this script in order to avoid self-recursive
+# call. It is not the case when this script is named `real-ld'.
 #
 # If this script is invoked without `--nodup' command line option, it just
-# calls `ld'. As mentioned above, the command to call the original `ld' is
-# hardcoded below in the script. All the command line options given to this
-# script are passed to `ld' as they are. And this script exits and returns
-# ld's status code.
+# calls the original `ld'. As mentioned above, the command to call the
+# original `ld' is hardcoded below in the script. All the command line
+# options given to this script are passed to the original `ld' as they are.
+# When the original `ld' finishes running, this script exits and returns ld's
+# status code.
 #
-# If this script is invoked with `--nodup' command line option, it calls `ld'
-# with `-Map=/path/to/tempfile' command line option. All the command line
-# options other than `--nodup' are also passed to `ld' as they are. If `ld'
-# fails, then this script immediately exits and returns ld's status code. If
-# `ld' succeeds in linking and produces the result of linking, the subsequent
-# behavior of this script is as follows.
+# If this script is invoked with `--nodup' command line option, it calls the
+# original `ld' with `-Map=/path/to/tempfile' command line option. All the
+# command line options other than `--nodup' are also passed to the original
+# `ld' as they are. If the original `ld' fails (returns a non-zero status
+# code), then this script immediately exits and returns a non-zero status
+# code. If the original `ld' finishes successfully and produces the result of
+# the link, the subsequent behavior of this script is as follows.
 #
-# With `-Map=/path/to/tempfile' option, `ld' outputs the link map to the
-# file. This script analyzes the file and extracts all file paths contained
-# in the link map. These file paths are ones that are directly passed to `ld'
-# as the command line arguments or searched by `-l' options.
+# With `-Map=/path/to/tempfile' option, the original `ld' outputs the link
+# map to the specified file. This script analyzes the file and extracts all
+# file paths contained in the link map. These file paths are ones that are
+# directly passed to the original `ld' as the command line arguments or
+# searched by `-l' options.
 #
 # Next, this script gathers all global symbols defined in the text section
 # of the extracted file paths by using `nm -g' command on each file.
 #
 # If any duplicate symbol is found, this script prints the duplicate symbol
-# to `stderr', deletes the result of linking produced by `ld' and exits with
-# an error status code.
+# to `stderr', deletes the result of the link produced by the original `ld'
+# and finally exits and returns a non-zero status code.
 #
 # If no duplicate symbol is found, this script exits and returns the success
 # status code.
 #
 # In addition to the detected duplicate symbols, the standard error output
-# from `ld' is printed to `stderr' as it is. The standard output from `ld' is
-# printed to `stdout' as it is, too.
+# from the original `ld' is printed to `stderr' as it is. The standard output
+# from the original `ld' is printed to `stdout' as it is, too.
 #
 # Many duplicate symbols of no interest are also found in the way previously
 # described. Current implementation skips these symbols by the following
 # ad-hoc rules.
+#
 #   - Skips "_init"
 #   - Skips "_fini"
 #   - Skips symbols that match /__.*/
+#
 
 require 'tempfile'
 require 'open3'
